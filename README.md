@@ -1,7 +1,7 @@
 # PokePixel — loja rápida
 
 Um painel com um botão de compra para cada pokébola, poção e revive da loja do Mark. **Alt+C**
-mostra e esconde.
+esconde o painel e **Alt+V** o traz de volta.
 
 Cada item tem o seu próprio **alvo**, que fica salvo: o número da coluna é quanto você quer *ter*,
 não quanto comprar. Com 77.149 Poké Balls e alvo 78.000, ela compra 851. Se você já tem mais do que
@@ -28,7 +28,11 @@ pelo nome no catálogo, escreve a quantidade no campo e clica em **Comprar**.
 
 A loja guarda a última aba aberta, então ela própria volta para **Comprar itens** se você tiver
 deixado em Vender ou Recomprar, e tira o filtro de categoria (**Todos**) quando o item que procura
-não está entre os que a aba atual mostra. Se o jogo pedir
+não está entre os que a aba atual mostra.
+
+Antes de cada ação, manual ou automática, ela fecha os avisos que o jogo põe por cima de tudo — o
+resumo da expedição, o "a caçada continuou sem você" e o banner do Discord —, porque com eles na
+frente o clique não chega à loja. A loja, a mochila e a caixa de confirmação nunca são fechadas. Se o jogo pedir
 confirmação, ela confirma — mas só uma caixa cujo texto corresponde ao item e à quantidade que
 aquele clique pediu. Dá para desligar essa confirmação automática no rodapé.
 

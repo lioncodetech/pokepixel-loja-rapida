@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "PokePixel - loja rapida",
-  "version": "1.16.0",
-  "description": "Botoes para comprar pokebolas, pocoes e revives sem abrir a loja do Mark. Alt+C mostra e esconde.",
+  "version": "1.18.0",
+  "description": "Botoes para comprar pokebolas, pocoes e revives sem abrir a loja do Mark. Alt+C esconde e Alt+V mostra.",
   "content_scripts": [
     {
       "matches": [

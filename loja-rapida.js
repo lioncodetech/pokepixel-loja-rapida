@@ -22,7 +22,9 @@
   const CATEGORIAS = ['Pokébolas', 'Poções', 'Revives'];
 
   // A loja premium usa as mesmas classes npc-shop. Sem excluir ela, o script compraria diamante.
-  const LOJA = '.npc-shop-window:not(.premium-shop-window)';
+  // O resumo da expedicao tambem se chama `npc-shop-window`, apesar de nao ser loja nenhuma: sem
+  // exclui-lo, o painel acharia que a loja estava aberta e procuraria cartoes dentro de um aviso.
+  const LOJA = '.npc-shop-window:not(.premium-shop-window):not(.expedition-window)';
 
   const ler = (chave, padrao) => {
     try {
@@ -109,6 +111,26 @@
     );
     candidatos.sort((a, b) => a.textContent.length - b.textContent.length);
     return candidatos[0] ?? null;
+  }
+
+  const SOBREPOSTO = '.pokeidle-panel-overlay';
+
+  /**
+   * Fecha os avisos que o jogo poe por cima de tudo, antes de qualquer acao.
+   *
+   * O resumo da expedicao, o "a cacada continuou sem voce" e o banner do Discord aparecem sozinhos,
+   * sobretudo ao entrar, e ficam na frente da loja e da mochila — com eles na tela o clique da
+   * extensao nao chega a lugar nenhum. Nada aqui e' fechado as cegas: a loja e a mochila sao
+   * poupadas (elas moram no mesmo tipo de janela), e com uma confirmacao de compra na tela nao se
+   * fecha nada, senao cancelariamos a compra que a propria extensao acabou de pedir.
+   */
+  function fecharPopups() {
+    if (confirmacaoNaTela()) return;
+    for (const banner of document.querySelectorAll('.pokeidle-promo-banner__close')) banner.click();
+    for (const sobre of document.querySelectorAll(SOBREPOSTO)) {
+      if (sobre.querySelector(`${LOJA}, ${INVENTARIO}`)) continue;
+      sobre.querySelector('.pokeidle-panel__close')?.click();
+    }
   }
 
   async function aguardarConfirmacao(limite = 2500) {
@@ -253,6 +275,7 @@
   }
 
   async function atualizarEstoque(avisar) {
+    fecharPopups();
     const jaAberto = Boolean(inventarioAberto());
     if (!jaAberto) {
       const botao = document.querySelector('.pokeidle-top-toolbar__btn[data-menu-id="inventory"]');
@@ -439,6 +462,7 @@
   }
 
   async function comprar(nome, alvo, avisar) {
+    fecharPopups();
     // A mochila e' lida antes de toda compra: o alvo so' faz sentido contra o que se tem agora.
     await atualizarEstoque(avisar);
     const falta = faltaPara(nome, alvo, ler(CHAVE_ESTOQUE, {}).itens);
@@ -480,6 +504,7 @@
       return;
     }
     parar = false;
+    fecharPopups();
     // Uma leitura so' da mochila serve a lista inteira: abri-la item a item seria absurdo.
     await atualizarEstoque(avisar);
     if (parar) {
@@ -558,7 +583,7 @@
       <button type="button" class="tudo" data-tudo></button>
       <div class="rodape">
         <button type="button" data-mochila>Atualizar mochila</button>
-        <span data-aviso>Alt+C esconde</span>
+        <span data-aviso>Alt+C esconde, Alt+V mostra</span>
       </div>
       <div class="linhas">
         <label class="auto">
@@ -710,7 +735,7 @@
   const mostrar = (texto) => {
     aviso().textContent = texto;
     clearTimeout(apagarAviso);
-    apagarAviso = setTimeout(() => (aviso().textContent = 'Alt+C esconde'), 3000);
+    apagarAviso = setTimeout(() => (aviso().textContent = 'Alt+C esconde, Alt+V mostra'), 3000);
   };
 
   function desenharSaldo() {
@@ -1159,10 +1184,21 @@
     painel.style.display = 'none';
   });
 
+  /**
+   * Dois atalhos, nao um que alterna.
+   *
+   * Com um unico atalho nunca se sabe em que estado o painel esta' sem olhar, e quem aperta duas
+   * vezes volta ao comeco. Alt+C esconde, Alt+V mostra — teclas vizinhas, como nas outras
+   * extensoes —, e apertar o mesmo de novo nao desfaz nada.
+   */
   addEventListener('keydown', (evento) => {
-    if (evento.altKey && !evento.ctrlKey && evento.code === 'KeyC') {
+    if (!evento.altKey || evento.ctrlKey) return;
+    if (evento.code === 'KeyC') {
       evento.preventDefault();
-      painel.style.display = painel.style.display === 'none' ? '' : 'none';
+      painel.style.display = 'none';
+    } else if (evento.code === 'KeyV') {
+      evento.preventDefault();
+      painel.style.display = '';
     }
   });
 
