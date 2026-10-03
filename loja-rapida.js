@@ -16,7 +16,9 @@
   const CHAVE_CONFIRMA = 'lioncode:loja-rapida:confirmar';
   const CHAVE_SALDO = 'lioncode:loja-rapida:saldo';
   const CHAVE_ESTOQUE = 'lioncode:loja-rapida:estoque';
-  const CHAVE_AUTO = 'lioncode:loja-rapida:auto-mochila';
+  const CHAVE_AUTO_COMPRA = 'lioncode:loja-rapida:auto-compra';
+  const CHAVE_VARIACAO = 'lioncode:loja-rapida:variacao';
+  const VARIACAO_PADRAO = 3;
   const CATEGORIAS = ['Pokébolas', 'Poções', 'Revives'];
 
   // A loja premium usa as mesmas classes npc-shop. Sem excluir ela, o script compraria diamante.
@@ -120,6 +122,39 @@
   }
 
   const cartoes = (janela) => [...janela.querySelectorAll('.npc-shop__buy-card')];
+
+  /**
+   * O elemento visivel dentro da loja cujo texto e' exatamente `rotulo`.
+   *
+   * Vence o mais fundo: a aba "Todos" mostra "Todos 14" no botao e "Todos" no rotulo de dentro, e
+   * e' o de dentro que casa. Clicar nele serve na mesma, porque o clique sobe ate' quem escuta.
+   */
+  function alvoComTexto(janela, rotulo) {
+    const casam = [...janela.querySelectorAll('button, a, li, div, span, p')].filter(
+      (e) => (e.textContent || '').trim() === rotulo && e.getBoundingClientRect().width > 0,
+    );
+    return casam[casam.length - 1] ?? null;
+  }
+
+  /**
+   * Poe a loja na aba onde se compra.
+   *
+   * A loja do Mark tem abas a esquerda — comprar itens, vender itens, vender pokemon, recomprar — e
+   * guarda a ultima aberta. Fora de "Comprar itens" nao existe cartao de compra nenhum, e a compra
+   * falhava dizendo que o item nao apareceu no catalogo, sem dizer o motivo de verdade.
+   */
+  async function prepararLoja(janela) {
+    if (cartoes(janela).length) return true;
+    const aba = alvoComTexto(janela, 'Comprar itens');
+    if (!aba) return false;
+    aba.click();
+    const fim = Date.now() + 3000;
+    while (Date.now() < fim) {
+      if (cartoes(janela).length) return true;
+      await espera(100);
+    }
+    return false;
+  }
 
   /**
    * O saldo que a loja mostra no rodape.
@@ -287,9 +322,16 @@
    */
   async function aguardarCartao(janela, nome, limite = 6000) {
     const fim = Date.now() + limite;
+    let tirouFiltro = false;
     while (Date.now() < fim) {
       const cartao = cartoes(janela).find((c) => dadosDoCartao(c).nome === nome);
       if (cartao && cartao.querySelector('.npc-shop__custom-button')) return cartao;
+      // Em cima da lista ha' filtros por categoria. Se ja' ha' cartoes na tela mas nao o nosso, o
+      // item nao esta' faltando: esta' escondido por um filtro, e "Todos" traz todos de volta.
+      if (!tirouFiltro && cartoes(janela).length) {
+        tirouFiltro = true;
+        alvoComTexto(janela, 'Todos')?.click();
+      }
       await espera(100);
     }
     return null;
@@ -372,43 +414,104 @@
     return true;
   }
 
-  async function comprar(nome, quantidade, avisar) {
+  /** A margem com que o alvo e' sorteado, em porcento. Zero compra exatamente ate' o alvo. */
+  function variacaoPct() {
+    const guardado = Number(ler(CHAVE_VARIACAO, VARIACAO_PADRAO));
+    return Number.isFinite(guardado) ? Math.min(50, Math.max(0, guardado)) : VARIACAO_PADRAO;
+  }
+
+  /**
+   * Quanto comprar de um item para chegar ao alvo.
+   *
+   * O numero da coluna e' quanto se quer **ter**, nao quanto comprar: compra-se a diferenca. Ter
+   * mais do que o alvo nao devolve nada, apenas nao compra. O alvo e' sorteado dentro da margem a
+   * cada compra, senao a mochila terminaria sempre no mesmo numero redondo, compra apos compra.
+   *
+   * Devolve `null` quando nao ha leitura da mochila: sem saber quanto se tem, "ate' ter X" nao e'
+   * uma conta que se possa fazer, e chutar compraria demais.
+   */
+  function faltaPara(nome, alvo, itens) {
+    if (!alvo) return 0;
+    const tenho = itens?.[nome];
+    if (tenho === undefined) return null;
+    const margem = (Math.random() * 2 - 1) * (variacaoPct() / 100);
+    return Math.max(0, Math.round(alvo * (1 + margem)) - tenho);
+  }
+
+  async function comprar(nome, alvo, avisar) {
+    // A mochila e' lida antes de toda compra: o alvo so' faz sentido contra o que se tem agora.
+    await atualizarEstoque(avisar);
+    const falta = faltaPara(nome, alvo, ler(CHAVE_ESTOQUE, {}).itens);
+    if (falta === null) {
+      avisar(`nao sei quanto tenho de ${nome}`);
+      return;
+    }
+    if (falta === 0) {
+      avisar(`ja' tenho o alvo de ${nome}`);
+      return;
+    }
     avisar('abrindo a loja...');
     const { janela, abriEu } = await abrirLoja();
     if (!janela) {
       avisar('nao achei a loja do Mark');
       return;
     }
+    if (!(await prepararLoja(janela))) {
+      avisar('a loja nao esta na aba de comprar itens');
+      if (abriEu) fecharLoja(janela);
+      return;
+    }
     // So' agora o relogio comeca: abrir a loja nao entra na conta dos 5 a 20 segundos.
-    await comprarNaLoja(janela, nome, quantidade, avisar);
+    await comprarNaLoja(janela, nome, falta, avisar);
     if (abriEu) fecharLoja(janela);
   }
 
   let parar = false;
 
-  /** Percorre a lista comprando so' o que tem quantidade maior que zero. */
+  /** Percorre a lista comprando, de cada item com alvo acima de zero, so' o que falta para la'. */
   async function comprarTudo(avisar) {
     const quantidades = ler(CHAVE_QTD, {});
-    const pedido = ler(CHAVE_CATALOGO, [])
+    const comAlvo = ler(CHAVE_CATALOGO, [])
       .filter((item) => CATEGORIAS.includes(item.categoria))
-      .map((item) => ({ ...item, quantidade: Number(quantidades[item.nome]) || 0 }))
-      .filter((item) => item.quantidade > 0);
-    if (!pedido.length) {
+      .map((item) => ({ ...item, alvo: Number(quantidades[item.nome]) || 0 }))
+      .filter((item) => item.alvo > 0);
+    if (!comAlvo.length) {
       avisar('nada configurado acima de zero');
       return;
     }
     parar = false;
+    // Uma leitura so' da mochila serve a lista inteira: abri-la item a item seria absurdo.
+    await atualizarEstoque(avisar);
+    if (parar) {
+      avisar('parado antes de comprar');
+      return;
+    }
+    const itens = ler(CHAVE_ESTOQUE, {}).itens;
+    const pedido = comAlvo
+      .map((item) => ({ ...item, quantidade: faltaPara(item.nome, item.alvo, itens) }))
+      .filter((item) => item.quantidade);
+    const semLeitura = pedido.filter((item) => item.quantidade === null).map((item) => item.nome);
+    const aComprar = pedido.filter((item) => item.quantidade !== null);
+    if (!aComprar.length) {
+      avisar(semLeitura.length ? `sem leitura de ${semLeitura.length} itens` : 'tudo ja no alvo');
+      return;
+    }
     avisar('abrindo a loja...');
     const { janela, abriEu } = await abrirLoja();
     if (!janela) {
       avisar('nao achei a loja do Mark');
       return;
     }
+    if (!(await prepararLoja(janela))) {
+      avisar('a loja nao esta na aba de comprar itens');
+      if (abriEu) fecharLoja(janela);
+      return;
+    }
     let feitos = 0;
-    for (const item of pedido) {
+    for (const item of aComprar) {
       if (parar) break;
       feitos += 1;
-      const prefixo = `${feitos}/${pedido.length} `;
+      const prefixo = `${feitos}/${aComprar.length} `;
       const ok = await comprarNaLoja(janela, item.nome, item.quantidade, (texto) =>
         avisar(prefixo + texto),
       );
@@ -416,7 +519,12 @@
       if (!ok) await espera(400);
     }
     if (abriEu) fecharLoja(janela);
-    avisar(parar ? `parado em ${feitos}/${pedido.length}` : `pronto: ${pedido.length} itens`);
+    const sobra = semLeitura.length ? ` (${semLeitura.length} sem leitura)` : '';
+    avisar(
+      parar
+        ? `parado em ${feitos}/${aComprar.length}${sobra}`
+        : `pronto: ${aComprar.length} itens${sobra}`,
+    );
   }
 
   /** Guarda o catalogo para os botoes existirem mesmo com a loja fechada. */
@@ -426,7 +534,12 @@
     const itens = cartoes(janela)
       .map(dadosDoCartao)
       .filter((item) => CATEGORIAS.includes(item.categoria));
-    if (itens.length) gravar(CHAVE_CATALOGO, itens);
+    if (!itens.length) return;
+    // Mesclado por nome, nao trocado: com um filtro de categoria ligado so' alguns cartoes existem,
+    // e trocar a lista inteira apagaria os outros itens do painel ate' alguem reabrir sem filtro.
+    const mapa = new Map(ler(CHAVE_CATALOGO, []).map((item) => [item.nome, item]));
+    for (const item of itens) mapa.set(item.nome, item);
+    gravar(CHAVE_CATALOGO, [...mapa.values()]);
   }
 
   // ---------- interface ----------
@@ -449,9 +562,13 @@
       </div>
       <div class="linhas">
         <label class="auto">
-          <input type="checkbox" data-auto> atualizar sozinho a cada
+          <button type="button" class="auto-botao" data-auto>Iniciar</button>
+          comprar tudo a cada
           <input type="number" data-min min="1" max="1440"> a
           <input type="number" data-max min="1" max="1440"> min
+        </label>
+        <label class="variacao">
+          variar o alvo em &plusmn; <input type="number" data-variacao min="0" max="50"> %
         </label>
       </div>
     </footer>`;
@@ -569,7 +686,19 @@
     #lioncode-loja-rapida .item--fora { opacity: .55; }
     #lioncode-loja-rapida .item__total--fora { color: #6d7586; }
     #lioncode-loja-rapida footer label.auto { margin: 6px 0 0; gap: 5px; color: #9aa3b4; }
-    #lioncode-loja-rapida footer label.auto input[type="number"] {
+    #lioncode-loja-rapida footer label.variacao { margin: 6px 0 0; gap: 5px; color: #9aa3b4; }
+    #lioncode-loja-rapida .auto-botao {
+      flex: none; background: #1e3326; color: #d6efdc; border: 1px solid #3a5a3f;
+      border-radius: 7px; padding: 3px 9px; font: inherit; font-weight: 600; cursor: pointer;
+      /* Largura minima para o rotulo virar "Parar · 42:07" sem empurrar o resto da linha. */
+      min-width: 104px;
+    }
+    #lioncode-loja-rapida .auto-botao:hover { background: #26412f; }
+    #lioncode-loja-rapida .auto-botao.parando {
+      border-color: #5e3a3a; background: #33201f; color: #f0cfcf;
+    }
+    #lioncode-loja-rapida footer label.auto input[type="number"],
+    #lioncode-loja-rapida footer label.variacao input[type="number"] {
       width: 44px; padding: 2px 4px;
     }`;
 
@@ -615,7 +744,7 @@
     for (const [classe, texto] of [
       ['item__nome', ''],
       ['item__unidade', 'mochila'],
-      ['col-qtd', 'quantidade'],
+      ['col-qtd', 'alvo'],
       ['item__total', 'valor'],
       ['col-vazio', ''],
     ]) {
@@ -656,21 +785,45 @@
         // Zero e' uma resposta valida: significa "este nao entra na compra de tudo".
         campo.min = '0';
         campo.value = quantidades[item.nome] ?? 0;
+        campo.title = `Quanto voce quer ter de ${item.nome}, nao quanto comprar.`;
         const botao = document.createElement('button');
         botao.type = 'button';
         const total = document.createElement('span');
         total.className = 'item__total';
-        // O gasto aparece antes do clique: o preco unitario sozinho nao responde "quanto vai sair".
+        /**
+         * O gasto aparece antes do clique, agora como estimativa.
+         *
+         * O campo e' o alvo, entao o que se vai gastar e' o que falta para chegar la', medido
+         * contra a ultima leitura da mochila — que pode estar velha, e a variacao ainda vai
+         * sortear o alvo na hora. Dai' o `~` no total do rodape.
+         */
         const pedido = () => Math.max(0, Math.floor(Number(campo.value) || 0));
         const atualizarTotal = () => {
-          const gasto = pedido() * item.preco;
-          total.textContent = gasto ? `= ${moeda(gasto)}` : 'fora';
+          const alvo = pedido();
+          const falta = tenho === undefined ? null : Math.max(0, alvo - tenho);
+          const gasto = (falta ?? 0) * item.preco;
+          // O rodape soma por aqui: o valor acompanha o que esta' na tela, nao o que foi gravado.
+          bloco.dataset.falta = String(falta ?? 0);
+          total.textContent = !alvo
+            ? 'fora'
+            : falta === null
+              ? '= ?'
+              : falta === 0
+                ? 'no alvo'
+                : `= ${moeda(gasto)}`;
           const saldo = ler(CHAVE_SALDO, null)?.valor;
           total.classList.toggle('item__total--caro', Boolean(saldo) && gasto > saldo);
-          total.classList.toggle('item__total--fora', gasto === 0);
-          bloco.classList.toggle('item--fora', gasto === 0);
-          botao.disabled = gasto === 0;
-          total.title = saldo ? `Ultimo saldo conhecido: ${moeda(saldo)}` : '';
+          total.classList.toggle('item__total--fora', !alvo || falta === 0);
+          bloco.classList.toggle('item--fora', alvo === 0);
+          // `emCompra` entra aqui porque ler a mochila redesenha a lista no meio de uma compra:
+          // sem isto os botoes voltariam habilitados e daria para comecar outra por cima.
+          botao.disabled = emCompra || alvo === 0;
+          total.title = !alvo
+            ? 'Alvo 0: este item nao entra na compra.'
+            : falta === null
+              ? 'Sem leitura da mochila; eu leio antes de comprar.'
+              : `Alvo ${moeda(alvo)}, tenho ${moeda(tenho)} (${idade(estoque.quando)})` +
+                (saldo ? `. Ultimo saldo: ${moeda(saldo)}` : '');
           somarPedido();
         };
         atualizarTotal();
@@ -722,16 +875,48 @@
   }
 
   /**
-   * Tamanho escolhido a mao.
+   * Tamanho: proporcional a janela, nao fixo em pixels.
    *
-   * O `max-height` padrao limita a altura a 88% da tela; com um tamanho proprio ele sai do caminho,
+   * O painel vive dentro de uma janela do LionMultInstance, que muda de tamanho quando as janelas
+   * sao rearranjadas. Um tamanho em pixels escolhido na tela inteira transborda num quadrante — por
+   * isso o que fica guardado e' a escolha junto com a janela onde foi feita. Em qualquer outra
+   * janela ele volta na mesma proporcao, preso ao minimo e ao que cabe.
+   *
+   * O `max-height` padrao limita a altura a 88% da tela; com uma altura propria ele sai do caminho,
    * senao arrastar o canto para baixo nao teria efeito nenhum depois de certo ponto.
    */
-  const tamanho = ler(CHAVE_TAM, null);
-  if (tamanho?.largura) {
-    painel.style.width = `${tamanho.largura}px`;
-    painel.style.height = `${tamanho.altura}px`;
-    painel.style.maxHeight = 'none';
+  const LARGURA_PADRAO = 524;
+  let ultimoAjuste = 0;
+
+  function ajustarAoViewport() {
+    const tam = ler(CHAVE_TAM, null);
+    // Numa janela estreita demais o proprio minimo nao cabe; ai' o minimo passa a ser a janela.
+    const minL = Math.min(330, innerWidth - 8);
+    const minA = Math.min(150, innerHeight - 8);
+    painel.style.minWidth = `${minL}px`;
+    painel.style.minHeight = `${minA}px`;
+    // Sem tamanho escolhido so' encolhemos o padrao para caber; a altura segue com o `max-height`.
+    const alvoL = tam?.largura
+      ? (tam.largura / (tam.janelaLargura || innerWidth)) * innerWidth
+      : LARGURA_PADRAO;
+    painel.style.width = `${Math.max(minL, Math.min(innerWidth - 8, Math.round(alvoL)))}px`;
+    if (tam?.altura) {
+      const alvoA = (tam.altura / (tam.janelaAltura || innerHeight)) * innerHeight;
+      painel.style.height = `${Math.max(minA, Math.min(innerHeight - 8, Math.round(alvoA)))}px`;
+      painel.style.maxHeight = 'none';
+    }
+    // Encolher a janela deixaria o painel pendurado para fora: trazemo-lo de volta para dentro.
+    if (painel.style.left) {
+      const caixa = painel.getBoundingClientRect();
+      const x = Math.max(0, Math.min(innerWidth - caixa.width, parseFloat(painel.style.left) || 0));
+      // Em baixo nao basta deixar o cabecalho a vista: o painel rola por dentro, entao o que
+      // passar da borda fica inalcancavel. Sobe-se o painel ate' caber, ou ate' ao topo.
+      const fundo = Math.max(0, innerHeight - caixa.height);
+      const y = Math.max(0, Math.min(fundo, parseFloat(painel.style.top) || 0));
+      painel.style.left = `${x}px`;
+      painel.style.top = `${y}px`;
+    }
+    ultimoAjuste = Date.now();
   }
 
   const posicao = ler(CHAVE_POS, null);
@@ -744,21 +929,37 @@
   }
 
   document.documentElement.append(estilo, painel);
+  ajustarAoViewport();
   arrastavel();
 
-  // Guarda o tamanho depois que a pessoa para de arrastar o canto, nao a cada pixel.
+  // Guarda o tamanho depois que a pessoa para de arrastar o canto, nao a cada pixel. Junto vai a
+  // janela em que foi escolhido, que e' o que torna a proporcao reconstituivel depois.
   let gravarTamanho = 0;
   new ResizeObserver(() => {
     clearTimeout(gravarTamanho);
     gravarTamanho = setTimeout(() => {
       if (painel.style.display === 'none') return;
+      // Um ajuste nosso tambem acorda o observador; gravar ai' trocaria a escolha da pessoa pelo
+      // tamanho encolhido de um quadrante, e a proporcao iria minguando a cada rearranjo.
+      if (Date.now() - ultimoAjuste < 700) return;
       painel.style.maxHeight = 'none';
+      const caixa = painel.getBoundingClientRect();
       gravar(CHAVE_TAM, {
-        largura: Math.round(painel.getBoundingClientRect().width),
-        altura: Math.round(painel.getBoundingClientRect().height),
+        largura: Math.round(caixa.width),
+        altura: Math.round(caixa.height),
+        janelaLargura: innerWidth,
+        janelaAltura: innerHeight,
       });
     }, 400);
   }).observe(painel);
+
+  // O painel acompanha a janela: rearranjar as views do LionMultInstance muda o viewport, e sem
+  // isto o painel continuaria do tamanho da janela anterior, maior do que o espaco que sobrou.
+  let ajusteJanela = 0;
+  addEventListener('resize', () => {
+    clearTimeout(ajusteJanela);
+    ajusteJanela = setTimeout(ajustarAoViewport, 150);
+  });
   // A idade do saldo envelhece sozinha; sem isto ficaria "agora" para sempre.
   setInterval(desenharSaldo, 30000);
 
@@ -776,21 +977,36 @@
   }
 
   /**
-   * O rotulo do botao ja' diz o que vai sair da conta.
+   * O rotulo do botao ja' diz, por alto, o que vai sair da conta.
    *
-   * A soma vem dos campos na tela, nao do que esta' gravado: gravar so' acontece ao sair do campo,
-   * e ate' la' o rodape mostraria um total que nao corresponde ao que se esta' vendo.
+   * A soma vem do que cada linha calculou na tela, nao do que esta' gravado: gravar so' acontece ao
+   * sair do campo, e ate' la' o rodape mostraria um total que nao corresponde ao que se esta' vendo.
+   * E' uma estimativa — o alvo real e' sorteado na hora da compra, sobre a mochila lida na hora.
    */
   function rotuloTudo() {
-    const soma = [...painel.querySelectorAll('.item')].reduce((total, bloco) => {
-      const quanto = Math.max(0, Math.floor(Number(bloco.querySelector('input')?.value) || 0));
-      return total + quanto * Number(bloco.dataset.preco || 0);
-    }, 0);
-    return soma ? `Comprar tudo · ${moeda(soma)}` : 'Comprar tudo';
+    const soma = [...painel.querySelectorAll('.item')].reduce(
+      (total, bloco) => total + Number(bloco.dataset.falta || 0) * Number(bloco.dataset.preco || 0),
+      0,
+    );
+    return soma ? `Comprar tudo · ~${moeda(soma)}` : 'Comprar tudo';
   }
 
   function somarPedido() {
     if (!comprandoTudo) tudo.textContent = rotuloTudo();
+  }
+
+  /** Uma passagem pela lista inteira. O botao e o relogio entram pela mesma porta. */
+  async function rodarTudo() {
+    comprandoTudo = true;
+    ocupado(true);
+    try {
+      await comprarTudo(mostrar);
+    } finally {
+      comprandoTudo = false;
+      parar = false;
+      ocupado(false);
+      somarPedido();
+    }
   }
 
   tudo.addEventListener('click', () => {
@@ -799,14 +1015,7 @@
       tudo.disabled = true;
       return;
     }
-    comprandoTudo = true;
-    ocupado(true);
-    void comprarTudo(mostrar).finally(() => {
-      comprandoTudo = false;
-      parar = false;
-      ocupado(false);
-      somarPedido();
-    });
+    void rodarTudo();
   });
 
   mochila.addEventListener('click', () => {
@@ -816,66 +1025,130 @@
     });
   });
 
-  // Atualizacao sozinha: desligada por padrao, porque abre uma janela do jogo na sua frente.
+  // Compra sozinha: desligada por padrao, e sempre pelo mesmo caminho do botao "Comprar tudo".
   const auto = painel.querySelector('[data-auto]');
   const campoMin = painel.querySelector('[data-min]');
   const campoMax = painel.querySelector('[data-max]');
   let relogio = 0;
+  let proxima = 0;
 
-  /** Le a configuracao aceitando tambem o formato antigo, de um valor so'. */
+  /**
+   * A configuracao da compra sozinha.
+   *
+   * Chave propria, e nao a antiga `auto-mochila`: la' ficava a atualizacao automatica da mochila, e
+   * quem a tivesse ligada passaria a comprar sozinho so' por atualizar a extensao. Dinheiro nao se
+   * gasta por heranca de configuracao.
+   */
   function configAuto() {
-    const salvo = ler(CHAVE_AUTO, null) ?? {};
-    const minimo = Number(salvo.min ?? salvo.minutos) || 60;
-    const maximo = Number(salvo.max ?? salvo.minutos) || minimo;
-    return { ligado: Boolean(salvo.ligado), min: minimo, max: Math.max(minimo, maximo) };
+    const salvo = ler(CHAVE_AUTO_COMPRA, null) ?? {};
+    const minimo = Number(salvo.min) || 60;
+    const maximo = Number(salvo.max) || minimo;
+    return { ligado: salvo.ligado === true, min: minimo, max: Math.max(minimo, maximo) };
+  }
+
+  /** Cada ciclo sorteia o seu proprio tempo: um intervalo fixo e' o padrao mais obvio que existe. */
+  function minutosSorteados() {
+    const { min, max } = configAuto();
+    return Math.max(1, min + Math.random() * (max - min));
+  }
+
+  /** O rotulo do botao e' o relogio: ligado, ele diz quanto falta para a proxima compra. */
+  function desenharAuto() {
+    const ligado = configAuto().ligado;
+    auto.classList.toggle('parando', ligado);
+    if (!ligado) {
+      auto.textContent = 'Iniciar';
+      return;
+    }
+    if (!proxima) {
+      auto.textContent = 'Parar · agora';
+      return;
+    }
+    const falta = Math.max(0, proxima - Date.now());
+    const mm = String(Math.floor(falta / 60000)).padStart(2, '0');
+    const ss = String(Math.floor((falta % 60000) / 1000)).padStart(2, '0');
+    auto.textContent = `Parar · ${mm}:${ss}`;
+  }
+
+  function agendarCompra() {
+    clearTimeout(relogio);
+    const minutos = minutosSorteados();
+    proxima = Date.now() + minutos * 60000;
+    relogio = setTimeout(() => void rodadaAuto(), minutos * 60000);
+    desenharAuto();
   }
 
   /**
-   * Agenda a proxima leitura, sorteando o intervalo dentro da faixa.
+   * Uma rodada do relogio: compra o que falta e so' entao marca a proxima.
    *
-   * Encadeado com `setTimeout` em vez de `setInterval`: cada ciclo sorteia o seu proprio tempo, e
-   * um intervalo fixo e' o padrao mais obvio que existe.
+   * A proxima e' marcada no fim, e nao junto com a largada, para duas compras nunca se cruzarem:
+   * uma rodada que demore mais do que o intervalo empurra a seguinte em vez de disputar a loja.
    */
-  function agendarMochila() {
+  async function rodadaAuto() {
     clearTimeout(relogio);
-    const config = configAuto();
-    auto.checked = config.ligado;
-    campoMin.value = config.min;
-    campoMax.value = config.max;
-    campoMin.disabled = !config.ligado;
-    campoMax.disabled = !config.ligado;
-    if (!config.ligado) return;
-    const minutos = config.min + Math.random() * (config.max - config.min);
-    relogio = setTimeout(
-      () => {
-        // Nunca no meio de uma compra: abrir o inventario ali atrapalharia a propria loja.
-        if (!lojaAberta() && !confirmacaoNaTela()) void atualizarEstoque(mostrar);
-        agendarMochila();
-      },
-      Math.max(1, minutos) * 60000,
-    );
+    proxima = 0;
+    desenharAuto();
+    // Uma compra pedida a mao tem a vez: esta rodada cede e volta no proximo intervalo.
+    if (!emCompra) await rodarTudo();
+    if (configAuto().ligado) agendarCompra();
   }
 
-  const salvarAuto = () => {
+  const salvarAuto = (ligado) => {
     const limite = (campo, padrao) => Math.min(1440, Math.max(1, Number(campo.value) || padrao));
     const minimo = limite(campoMin, 60);
-    gravar(CHAVE_AUTO, {
-      ligado: auto.checked,
-      min: minimo,
-      // O maximo nunca fica abaixo do minimo, senao a faixa nao existe.
-      max: Math.max(minimo, limite(campoMax, minimo)),
-    });
-    agendarMochila();
+    const maximo = Math.max(minimo, limite(campoMax, minimo));
+    campoMin.value = minimo;
+    campoMax.value = maximo;
+    // O maximo nunca fica abaixo do minimo, senao a faixa nao existe.
+    gravar(CHAVE_AUTO_COMPRA, { ligado, min: minimo, max: maximo });
   };
-  auto.addEventListener('change', salvarAuto);
-  campoMin.addEventListener('change', salvarAuto);
-  campoMax.addEventListener('change', salvarAuto);
-  // Aqui, e nao junto do resto da partida: `agendarMochila` le' os campos, que so' existem acima.
-  agendarMochila();
+
+  auto.addEventListener('click', () => {
+    const ligar = !configAuto().ligado;
+    salvarAuto(ligar);
+    if (ligar) {
+      // Comecar e' comprar: o primeiro ciclo sai agora, e o relogio vale da' para a proxima.
+      void rodadaAuto();
+      return;
+    }
+    clearTimeout(relogio);
+    proxima = 0;
+    // Parar e' parar tambem o que esta' em andamento; a compra do item corrente ainda termina.
+    if (emCompra) parar = true;
+    desenharAuto();
+  });
+
+  const mudouFaixa = () => {
+    salvarAuto(configAuto().ligado);
+    // Mudar a faixa com o relogio correndo vale para ja': o tempo que faltava era da faixa antiga.
+    if (configAuto().ligado && proxima) agendarCompra();
+  };
+  campoMin.addEventListener('change', mudouFaixa);
+  campoMax.addEventListener('change', mudouFaixa);
+
+  // Aqui, e nao junto do resto da partida: isto le' os campos, que so' existem acima.
+  campoMin.value = configAuto().min;
+  campoMax.value = configAuto().max;
+  // Recarregar a pagina nao e' pedir uma compra: a compra sozinha que estava ligada volta a contar
+  // o tempo, mas a primeira rodada espera o intervalo em vez de sair no ato de abrir o jogo.
+  if (configAuto().ligado) agendarCompra();
+  else desenharAuto();
+  setInterval(desenharAuto, 1000);
 
   const confirma = painel.querySelector('[data-confirma]');
   confirma.checked = ler(CHAVE_CONFIRMA, true);
   confirma.addEventListener('change', () => gravar(CHAVE_CONFIRMA, confirma.checked));
+
+  const variacao = painel.querySelector('[data-variacao]');
+  variacao.value = String(variacaoPct());
+  variacao.title =
+    'Margem com que o alvo e sorteado a cada compra: com 3%, um alvo de 78.000 vira algo ' +
+    'entre 75.660 e 80.340. Zero compra exatamente ate o alvo.';
+  variacao.addEventListener('change', () => {
+    const valor = Math.min(50, Math.max(0, Math.round(Number(variacao.value) || 0)));
+    variacao.value = String(valor);
+    gravar(CHAVE_VARIACAO, valor);
+  });
 
   // Desenhar por ultimo: a lista le' `tudo` e `ocupado`, que so' existem depois da fiacao acima.
   desenhar();

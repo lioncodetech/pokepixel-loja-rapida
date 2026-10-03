@@ -3,14 +3,32 @@
 Um painel com um botão de compra para cada pokébola, poção e revive da loja do Mark. **Alt+C**
 mostra e esconde.
 
-Cada item tem a sua própria quantidade, que fica salva. Quem fica em **0** não entra na compra.
+Cada item tem o seu próprio **alvo**, que fica salvo: o número da coluna é quanto você quer *ter*,
+não quanto comprar. Com 77.149 Poké Balls e alvo 78.000, ela compra 851. Se você já tem mais do que
+o alvo, ela não compra nada — e quem fica em **0** não entra na compra.
+
+Para a mochila não terminar sempre no mesmo número redondo, o alvo é sorteado dentro de uma margem
+que você define no rodapé (± 3% por padrão): um alvo de 78.000 vira algo entre 75.660 e 80.340 a
+cada compra. Com 0% ela compra exatamente até o alvo.
+
+Antes de comprar — tanto num item quanto no **Comprar tudo** — ela lê a mochila, porque "até ter X"
+só se calcula contra o que você tem agora. O valor que aparece na tela é a estimativa feita sobre a
+última leitura; por isso o total do botão vem com `~`.
 O painel mostra quanto você tem na mochila, quanto vai gastar e o seu saldo, e arrasta pelo
 cabeçalho para onde você quiser.
+
+Dá para redimensioná-lo pelo canto, e o tamanho fica guardado como proporção da janela, não em
+pixels: ao rearranjar as janelas do LionMultInstance, o painel encolhe e cresce junto com a janela
+em que está, sem nunca sobrar para fora dela.
 
 ## Como ela compra
 
 Exatamente como você compraria. Ela abre a loja do Mark pelo menu do próprio jogo, acha o item
-pelo nome no catálogo, escreve a quantidade no campo e clica em **Comprar**. Se o jogo pedir
+pelo nome no catálogo, escreve a quantidade no campo e clica em **Comprar**.
+
+A loja guarda a última aba aberta, então ela própria volta para **Comprar itens** se você tiver
+deixado em Vender ou Recomprar, e tira o filtro de categoria (**Todos**) quando o item que procura
+não está entre os que a aba atual mostra. Se o jogo pedir
 confirmação, ela confirma — mas só uma caixa cujo texto corresponde ao item e à quantidade que
 aquele clique pediu. Dá para desligar essa confirmação automática no rodapé.
 
@@ -20,16 +38,30 @@ mesmas classes, e sem esse cuidado um clique errado gastaria moeda paga.
 
 ## O botão "Comprar tudo"
 
-Compra, em sequência, todos os itens com quantidade acima de zero, abrindo a loja uma única vez.
-O valor total aparece no próprio botão. Durante a compra ele vira **Parar**: termina o item em
+Lê a mochila uma vez, descobre o que falta em cada item com alvo acima de zero e compra isso em
+sequência, abrindo a loja uma única vez. Quem já está no alvo é pulado sem abrir nada. O valor
+estimado aparece no próprio botão. Durante a compra ele vira **Parar**: termina o item em
 andamento e para, dizendo onde parou. Um item que falhar não interrompe os outros.
 
 ## A mochila
 
 O número que aparece em cada linha vem do inventário do jogo, lido quando ele está aberto, e é
 guardado com a hora da leitura — por isso pode estar desatualizado. O botão **Atualizar mochila**
-abre o inventário, lê e fecha. Há também uma atualização automática, **desligada por padrão**, com
-intervalo sorteado dentro de uma faixa que você define.
+abre o inventário, lê e fecha; antes de cada compra isso acontece sozinho.
+
+## Comprar sozinho
+
+O botão **Iniciar**, no rodapé, liga o ciclo: ele compra na hora e marca a próxima compra para
+daqui a um tempo sorteado dentro da faixa de minutos ao lado. O próprio botão vira **Parar** e
+mostra o relógio da próxima — `Parar · 06:30`. Clicar em Parar encerra o ciclo e também a compra
+em andamento, que ainda termina o item que estava no meio.
+
+A próxima só é marcada quando a anterior acaba, então duas compras nunca se cruzam. Mudar a faixa
+com o relógio correndo vale na hora. Uma compra que você pedir à mão tem a vez: se o relógio bater
+durante ela, aquele ciclo é pulado e volta no intervalo seguinte.
+
+Recarregar a página não é pedir uma compra: se o ciclo estava ligado, ele volta a contar o tempo,
+mas a primeira rodada espera o intervalo em vez de comprar no ato de abrir o jogo.
 
 ## O que ela guarda
 
