@@ -11,6 +11,7 @@
 
   const CHAVE_QTD = 'lioncode:loja-rapida:quantidades';
   const CHAVE_POS = 'lioncode:loja-rapida:posicao';
+  const CHAVE_TAM = 'lioncode:loja-rapida:tamanho';
   const CHAVE_CATALOGO = 'lioncode:loja-rapida:catalogo';
   const CHAVE_CONFIRMA = 'lioncode:loja-rapida:confirmar';
   const CHAVE_SALDO = 'lioncode:loja-rapida:saldo';
@@ -462,6 +463,9 @@
     #lioncode-loja-rapida, #lioncode-loja-rapida * { box-sizing: border-box; }
     #lioncode-loja-rapida {
       position: fixed; z-index: 2147483000; width: 524px; max-height: 88vh; overflow: auto;
+      /* Canto de arrastar do proprio navegador: a rolagem ja' existe, entao encolher nao esconde
+         nada, so' passa a rolar. */
+      resize: both; min-width: 330px; min-height: 150px;
       background: #10151e; color: #e6e9ef; border: 1px solid #2a3240; border-radius: 12px;
       font: 12px/1.45 system-ui, sans-serif; box-shadow: 0 14px 34px rgba(0,0,0,.55);
       scrollbar-width: thin; scrollbar-color: #2a3240 transparent;
@@ -717,6 +721,19 @@
     cabecalho.addEventListener('pointercancel', soltar);
   }
 
+  /**
+   * Tamanho escolhido a mao.
+   *
+   * O `max-height` padrao limita a altura a 88% da tela; com um tamanho proprio ele sai do caminho,
+   * senao arrastar o canto para baixo nao teria efeito nenhum depois de certo ponto.
+   */
+  const tamanho = ler(CHAVE_TAM, null);
+  if (tamanho?.largura) {
+    painel.style.width = `${tamanho.largura}px`;
+    painel.style.height = `${tamanho.altura}px`;
+    painel.style.maxHeight = 'none';
+  }
+
   const posicao = ler(CHAVE_POS, null);
   if (posicao?.left) {
     painel.style.left = posicao.left;
@@ -728,6 +745,20 @@
 
   document.documentElement.append(estilo, painel);
   arrastavel();
+
+  // Guarda o tamanho depois que a pessoa para de arrastar o canto, nao a cada pixel.
+  let gravarTamanho = 0;
+  new ResizeObserver(() => {
+    clearTimeout(gravarTamanho);
+    gravarTamanho = setTimeout(() => {
+      if (painel.style.display === 'none') return;
+      painel.style.maxHeight = 'none';
+      gravar(CHAVE_TAM, {
+        largura: Math.round(painel.getBoundingClientRect().width),
+        altura: Math.round(painel.getBoundingClientRect().height),
+      });
+    }, 400);
+  }).observe(painel);
   // A idade do saldo envelhece sozinha; sem isto ficaria "agora" para sempre.
   setInterval(desenharSaldo, 30000);
 
