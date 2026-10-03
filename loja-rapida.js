@@ -588,9 +588,21 @@
       <div class="linhas">
         <label class="auto">
           <button type="button" class="auto-botao" data-auto>Iniciar</button>
-          comprar tudo a cada
-          <input type="number" data-min min="1" max="1440"> a
-          <input type="number" data-max min="1" max="1440"> min
+          comprar tudo
+          <select data-modo>
+            <option value="minutos">a cada</option>
+            <option value="horarios">uma vez entre</option>
+          </select>
+          <span data-campos-minutos>
+            <input type="number" data-min min="1" max="1440"> a
+            <input type="number" data-max min="1" max="1440"> min
+          </span>
+          <span class="horarios">
+            <input type="text" data-horarios placeholder="08:00-09:00, 19:00-20:00"
+              title="Uma janela por vírgula. Dentro de cada uma ela age uma única vez."
+              spellcheck="false">
+          </span>
+          <span data-proxima></span>
         </label>
         <label class="variacao">
           variar o alvo em &plusmn; <input type="number" data-variacao min="0" max="50"> %
@@ -725,7 +737,19 @@
     #lioncode-loja-rapida footer label.auto input[type="number"],
     #lioncode-loja-rapida footer label.variacao input[type="number"] {
       width: 44px; padding: 2px 4px;
-    }`;
+    }
+    #lioncode-loja-rapida .horarios { display: inline-flex; align-items: center; gap: 5px; }
+    #lioncode-loja-rapida .horarios input {
+      width: 150px; padding: 2px 5px; background: #0b0f16; color: #e6e9ef;
+      border: 1px solid #2a3240; border-radius: 6px; font: inherit;
+    }
+    /* Texto que nao vira janela nenhuma: o ciclo ficaria parado sem explicacao. */
+    #lioncode-loja-rapida [data-proxima] { color: #7d8697; font-size: 11px; }
+    #lioncode-loja-rapida [data-modo] {
+      background: #0b0f16; color: #e6e9ef; border: 1px solid #2a3240; border-radius: 6px;
+      font: inherit; padding: 2px 4px;
+    }
+    #lioncode-loja-rapida .horarios input.erro { border-color: #7a3b3b; color: #f0b7b7; }`;
 
   let comprandoTudo = false;
   let emCompra = false;
@@ -1054,6 +1078,10 @@
   const auto = painel.querySelector('[data-auto]');
   const campoMin = painel.querySelector('[data-min]');
   const campoMax = painel.querySelector('[data-max]');
+  const campoHorarios = painel.querySelector('[data-horarios]');
+  const campoModo = painel.querySelector('[data-modo]');
+  const camposMinutos = painel.querySelector('[data-campos-minutos]');
+  const campoProxima = painel.querySelector('[data-proxima]');
   let relogio = 0;
   let proxima = 0;
 
@@ -1068,7 +1096,84 @@
     const salvo = ler(CHAVE_AUTO_COMPRA, null) ?? {};
     const minimo = Number(salvo.min) || 60;
     const maximo = Number(salvo.max) || minimo;
-    return { ligado: salvo.ligado === true, min: minimo, max: Math.max(minimo, maximo) };
+    return {
+      ligado: salvo.ligado === true,
+      min: minimo,
+      max: Math.max(minimo, maximo),
+      horarios: String(salvo.horarios ?? ''),
+      modo: salvo.modo === 'horarios' ? 'horarios' : 'minutos',
+      ultima: Number(salvo.ultima) || 0,
+    };
+  }
+
+  /**
+   * As janelas de horario em que o ciclo pode agir, lidas de "08:00-09:00, 18:00-20:00".
+   *
+   * Vazio quer dizer "a qualquer hora", que e' o modo de so' minutagem — o unico que existia antes.
+   * Uma janela que termina antes de comecar atravessa a meia-noite: 22:00-02:00 vale assim.
+   */
+  function janelas() {
+    const achadas = [];
+    for (const parte of String(configAuto().horarios).split(/[;,]/)) {
+      const casa =
+        /^\s*(\d{1,2})(?::(\d{2}))?\s*h?\s*(?:-|as|ate|até)\s*(\d{1,2})(?::(\d{2}))?\s*h?\s*$/i.exec(
+          parte,
+        );
+      if (!casa) continue;
+      const minuto = (hora, min) => (Number(hora) % 24) * 60 + (Number(min ?? 0) % 60);
+      achadas.push({ inicio: minuto(casa[1], casa[2]), fim: minuto(casa[3], casa[4]) });
+    }
+    return achadas;
+  }
+
+  /**
+   * As janelas como instantes de verdade, de ontem, hoje e amanha, em ordem de abertura.
+   *
+   * Em minutos do dia nao da' para dizer "esta janela ja' foi usada": 08:00 de hoje e 08:00 de
+   * amanha sao o mesmo numero. Com instantes absolutos, cada abertura e' unica e pode ser
+   * comparada com a hora da ultima rodada. Ontem entra na conta por causa das janelas que
+   * atravessam a meia-noite.
+   */
+  function proximasJanelas(agora) {
+    const todas = [];
+    for (const { inicio, fim } of janelas()) {
+      const duracao = ((fim - inicio + 1440) % 1440 || 1440) * 60000;
+      for (const dia of [-1, 0, 1]) {
+        const abre = new Date(agora);
+        abre.setHours(0, 0, 0, 0);
+        abre.setDate(abre.getDate() + dia);
+        abre.setMinutes(inicio);
+        todas.push({ abre: abre.getTime(), fecha: abre.getTime() + duracao });
+      }
+    }
+    return todas.sort((a, b) => a.abre - b.abre);
+  }
+
+  /**
+   * Quanto falta, em ms, ate' o instante sorteado da proxima janela — ou `null` se nao ha' janela.
+   *
+   * Uma rodada por janela: a que ja' recebeu a sua fica para tras pela comparacao com `ultima`.
+   * O instante e' sorteado dentro da janela inteira, e nao na abertura, porque agir sempre as
+   * 08:00 em ponto e' o padrao mais visivel que existe. Com a janela ja' aberta, o sorteio vale do
+   * momento atual ate' o fechamento.
+   */
+  function esperaDaJanela(agora = new Date()) {
+    const quando = agora.getTime();
+    const ultima = configAuto().ultima;
+    for (const { abre, fecha } of proximasJanelas(agora)) {
+      if (fecha <= quando || abre <= ultima) continue;
+      const comeco = Math.max(abre, quando);
+      if (comeco >= fecha) continue;
+      return comeco - quando + Math.random() * (fecha - comeco);
+    }
+    return null;
+  }
+
+  /** Mostra so' os campos do modo escolhido: dois conjuntos a' vista e' o que confundia. */
+  function atualizarModo() {
+    const porHorario = campoModo.value === 'horarios';
+    camposMinutos.style.display = porHorario ? 'none' : '';
+    campoHorarios.parentElement.style.display = porHorario ? '' : 'none';
   }
 
   /** Cada ciclo sorteia o seu proprio tempo: um intervalo fixo e' o padrao mais obvio que existe. */
@@ -1083,23 +1188,45 @@
     auto.classList.toggle('parando', ligado);
     if (!ligado) {
       auto.textContent = 'Iniciar';
+      campoProxima.textContent = '';
       return;
     }
     if (!proxima) {
       auto.textContent = 'Parar · agora';
+      campoProxima.textContent = 'em andamento';
       return;
     }
     const falta = Math.max(0, proxima - Date.now());
-    const mm = String(Math.floor(falta / 60000)).padStart(2, '0');
-    const ss = String(Math.floor((falta % 60000) / 1000)).padStart(2, '0');
-    auto.textContent = `Parar · ${mm}:${ss}`;
+    const dois = (n) => String(n).padStart(2, '0');
+    // A contagem sozinha nao responde "quando e' que isso acontece?". A hora por extenso responde,
+    // e e' ela que mostra, no modo horario, que a rodada vai cair dentro da janela.
+    const quando = new Date(proxima);
+    campoProxima.textContent = `próxima às ${dois(quando.getHours())}:${dois(quando.getMinutes())}`;
+    const horas = Math.floor(falta / 3600000);
+    const mm = Math.floor((falta % 3600000) / 60000);
+    const ss = Math.floor((falta % 60000) / 1000);
+    // Com janelas de horario a espera passa facil de uma hora, e "115:14" nao se le' como tempo.
+    auto.textContent = horas
+      ? `Parar · ${horas}:${dois(mm)}:${dois(ss)}`
+      : `Parar · ${dois(mm)}:${dois(ss)}`;
   }
 
   function agendarCompra() {
     clearTimeout(relogio);
-    const minutos = minutosSorteados();
-    proxima = Date.now() + minutos * 60000;
-    relogio = setTimeout(() => void rodadaAuto(), minutos * 60000);
+    // Os dois modos se separam aqui, e so' aqui: por minutagem o intervalo e' sorteado na faixa;
+    // por horario e' sorteado dentro da proxima janela que ainda nao teve a sua rodada.
+    const ms =
+      configAuto().modo === 'horarios' ? esperaDaJanela() : minutosSorteados() * 60000;
+    if (ms === null) {
+      // Modo horario sem nenhuma janela legivel: nao da' para marcar nada, e dizer isso e' melhor
+      // do que um ciclo ligado que nunca acontece.
+      proxima = 0;
+      desenharAuto();
+      campoProxima.textContent = 'nenhum horário válido';
+      return;
+    }
+    proxima = Date.now() + ms;
+    relogio = setTimeout(() => void rodadaAuto(), ms);
     desenharAuto();
   }
 
@@ -1113,6 +1240,9 @@
     clearTimeout(relogio);
     proxima = 0;
     desenharAuto();
+    // A janela fica marcada como usada antes de agir: se a rodada demorar e terminar ja' fora
+    // dela, ainda assim foi a rodada daquela janela, e a proxima tem de ser a seguinte.
+    gravar(CHAVE_AUTO_COMPRA, { ...ler(CHAVE_AUTO_COMPRA, {}), ultima: Date.now() });
     // Uma compra pedida a mao tem a vez: esta rodada cede e volta no proximo intervalo.
     if (!emCompra) await rodarTudo();
     if (configAuto().ligado) agendarCompra();
@@ -1125,15 +1255,29 @@
     campoMin.value = minimo;
     campoMax.value = maximo;
     // O maximo nunca fica abaixo do minimo, senao a faixa nao existe.
-    gravar(CHAVE_AUTO_COMPRA, { ligado, min: minimo, max: maximo });
+    const horarios = campoHorarios.value.trim();
+    gravar(CHAVE_AUTO_COMPRA, {
+      ...ler(CHAVE_AUTO_COMPRA, {}),
+      ligado,
+      min: minimo,
+      max: maximo,
+      horarios,
+      modo: campoModo.value,
+    });
+    atualizarModo();
+    // Texto que nao vira janela nenhuma fica marcado: aceitar em silencio faria o ciclo
+    // ficar parado para sempre sem ninguem entender por que.
+    campoHorarios.classList.toggle('erro', Boolean(horarios) && !janelas().length);
   };
 
   auto.addEventListener('click', () => {
     const ligar = !configAuto().ligado;
     salvarAuto(ligar);
     if (ligar) {
-      // Comecar e' comprar: o primeiro ciclo sai agora, e o relogio vale da' para a proxima.
-      void rodadaAuto();
+      // Por minutagem, comecar e' comprar: a primeira rodada sai agora. Por horario nao — a graca do
+      // modo e' a rodada cair dentro da janela, entao aqui so' se marca a proxima.
+      if (configAuto().modo === 'horarios') agendarCompra();
+      else void rodadaAuto();
       return;
     }
     clearTimeout(relogio);
@@ -1148,10 +1292,15 @@
     // Mudar a faixa com o relogio correndo vale para ja': o tempo que faltava era da faixa antiga.
     if (configAuto().ligado && proxima) agendarCompra();
   };
+  campoModo.addEventListener('change', mudouFaixa);
+  campoHorarios.addEventListener('change', mudouFaixa);
   campoMin.addEventListener('change', mudouFaixa);
   campoMax.addEventListener('change', mudouFaixa);
 
   // Aqui, e nao junto do resto da partida: isto le' os campos, que so' existem acima.
+  campoModo.value = configAuto().modo;
+  atualizarModo();
+  campoHorarios.value = configAuto().horarios;
   campoMin.value = configAuto().min;
   campoMax.value = configAuto().max;
   // Recarregar a pagina nao e' pedir uma compra: a compra sozinha que estava ligada volta a contar
