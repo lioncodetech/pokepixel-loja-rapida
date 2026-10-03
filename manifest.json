@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "PokePixel - loja rapida",
+  "version": "1.14.0",
+  "description": "Botoes para comprar pokebolas, pocoes e revives sem abrir a loja do Mark. Alt+C mostra e esconde.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://pokepixel.nietore.com/*",
+        "https://poke.idleworld.online/*"
+      ],
+      "js": [
+        "loja-rapida.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

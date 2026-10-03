@@ -1,0 +1,45 @@
+name: Release
+
+# A release sai apenas de uma tag empurrada pelo dono do repositorio. Nunca de um
+# pull request: se o codigo de um estranho pudesse disparar a publicacao, o repo
+# aberto deixaria de ser garantia de nada.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Empacotar
+        run: |
+          set -eu
+          nome="${GITHUB_REPOSITORY##*/}"
+          versao="${GITHUB_REF_NAME#v}"
+          declarada=$(node -p "require('./manifest.json').version")
+          if [ "$declarada" != "$versao" ]; then
+            echo "A tag ($versao) nao bate com a versao do manifest.json ($declarada)." >&2
+            exit 1
+          fi
+          mkdir pacote
+          cp manifest.json README.md pacote/
+          cp ./*.js pacote/
+          (cd pacote && zip -r -X "../$nome-$versao.zip" .)
+          sha256sum "$nome-$versao.zip" | tee "$nome-$versao.zip.sha256"
+
+      - name: Publicar a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          nome="${GITHUB_REPOSITORY##*/}"
+          versao="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            "$nome-$versao.zip" "$nome-$versao.zip.sha256" \
+            --title "$nome $versao" \
+            --notes "Pacote da extensao. Confira a soma SHA-256 publicada ao lado do .zip."
