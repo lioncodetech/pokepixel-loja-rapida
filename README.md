@@ -99,6 +99,11 @@ Tudo no armazenamento da própria página, no seu computador:
 Não lê a sua senha, não faz chamada de rede nenhuma e não envia nada para lugar nenhum. O código
 é um arquivo só, sem dependências, e está aqui inteiro para ser lido.
 
+## Transparência
+
+O painel fica um pouco transparente em repouso, para não tapar o jogo atrás dele, e volta ao normal
+assim que o mouse ou o cursor de texto chega perto.
+
 ## Onde funciona
 
 `pokepixel.nietore.com` e `poke.idleworld.online`. Em qualquer outro site ela não é carregada.

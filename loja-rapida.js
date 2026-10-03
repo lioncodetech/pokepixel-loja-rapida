@@ -623,7 +623,11 @@
       background: #10151e; color: #e6e9ef; border: 1px solid #2a3240; border-radius: 12px;
       font: 12px/1.45 system-ui, sans-serif; box-shadow: 0 14px 34px rgba(0,0,0,.55);
       scrollbar-width: thin; scrollbar-color: #2a3240 transparent;
+      /* Transparente em repouso para nao tapar o jogo atras dela, e opaca assim que o mouse ou o
+         teclado chega: o painel e' para ser lido de perto, nao enquanto se joga. */
+      opacity: .82; transition: opacity .15s;
     }
+    #lioncode-loja-rapida:hover, #lioncode-loja-rapida:focus-within { opacity: 1; }
     #lioncode-loja-rapida header {
       display: flex; align-items: center; justify-content: space-between; gap: 8px;
       padding: 9px 12px; background: linear-gradient(#1b2430, #161d27); cursor: move;
